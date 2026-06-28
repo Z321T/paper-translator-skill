@@ -1,4 +1,4 @@
-# paper-translator
+# paper-translator--v1.1.0
 ##### 英文论文翻译skill
 
 ##### pdf原文转md格式译文
