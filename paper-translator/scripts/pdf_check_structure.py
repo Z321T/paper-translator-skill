@@ -7,7 +7,7 @@ Usage:
     uv run python scripts/pdf_check_structure.py <paper.pdf>
 
 Install:
-    uv pip install pdfplumber
+    uv add pdfplumber
 """
 
 import sys

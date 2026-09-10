@@ -4,7 +4,7 @@ Usage:
     uv run python scripts/pdf_extract_text.py <paper.pdf> [output.txt]
 
 Install:
-    uv pip install pdfplumber
+    uv add pdfplumber
 """
 
 import sys

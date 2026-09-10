@@ -8,6 +8,8 @@
 - All LaTeX formulas preserved verbatim in both English and Chinese sections
 - Citations kept as `(Author et al., Year)` in both languages
 - First mention of proper nouns: English (Chinese). Subsequent: English only.
+- Meaningful PDF visuals appear at their logical positions as relative image links or faithful Markdown/Mermaid reconstructions.
+- Image assets live beside the Markdown file in `<markdown-stem>_assets/`; links always use POSIX `/` separators.
 
 ## Complete Annotated Example
 
@@ -86,10 +88,14 @@ As shown in Table 1, HALO consistently improves all metrics.
 ### Figure/Table Captions
 
 ```markdown
-Figure 1 illustrates the contrast between three settings: **(Top)** OCL uses flat labels only. **(Middle)** HLE and IIRC operate under strict coarse-to-fine curriculum. **(Bottom)** DHOCL allows arbitrary hierarchical levels at any time.
+![Figure 1: Comparison of three continual-learning settings](paper_translation_assets/page-003-figure-1.png)
 
-图 1 展示了三种设定的对比：**（上）** OCL 仅使用平坦标签。**（中）** HLE 和 IIRC 在严格的粗到细课程下运行。**（下）** DHOCL 允许任意层次级别的标签在任何时间到达。
+**Figure 1:** Figure 1 illustrates the contrast between three settings: **(Top)** OCL uses flat labels only. **(Middle)** HLE and IIRC operate under strict coarse-to-fine curriculum. **(Bottom)** DHOCL allows arbitrary hierarchical levels at any time.
+
+**图 1：** 图 1 展示了三种设定的对比：**（上）** OCL 仅使用平坦标签。**（中）** HLE 和 IIRC 在严格的粗到细课程下运行。**（下）** DHOCL 允许任意层次级别的标签在任何时间到达。
 ```
+
+The image path is relative to `paper_translation.md`. Move the Markdown file and `paper_translation_assets/` together. For a custom file such as `survey.zh.md`, use `survey.zh_assets/`. If a custom stem contains spaces, parentheses, or non-ASCII characters, keep the extractor's percent-encoded Markdown destination so CommonMark parsers resolve it reliably.
 
 ### Appendix
 
@@ -137,6 +143,7 @@ Existing approaches can be mainly categorized into: **(1) Embedding-based method
 | All body text | Full translation |
 | Section/subsection headers | Chinese after `\|` |
 | Figure/table captions | Full translation, keep "Figure X:" prefix |
+| Figure/image content | Insert a relative image link before the bilingual caption, or reconstruct faithfully in Markdown/Mermaid |
 | Table column headers in annotations | Translate, add parenthetical English |
 | Substantive footnotes | Full translation |
 | Impact statements, ethics statements | Full translation |

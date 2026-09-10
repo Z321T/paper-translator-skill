@@ -1,0 +1,10 @@
+.venv/
+.uv-cache/
+.uv-python/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+findings.md
+progress.md
+task_plan.md

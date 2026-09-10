@@ -8,7 +8,7 @@ Usage:
     uv run python scripts/pdf_extract_two_column.py <paper.pdf> [output.txt]
 
 Install:
-    uv pip install pdfplumber
+    uv add pdfplumber
 """
 
 import sys
