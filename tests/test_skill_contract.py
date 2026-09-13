@@ -151,3 +151,12 @@ def test_api_reference_limits_retry_contract_to_supported_triggers():
     assert "http 429" in reference
     assert "http 5xx" in reference
     assert "network failures" in reference
+
+
+def test_api_reference_documents_conservative_authentication_code_allowlist():
+    reference = MINERU_REFERENCE_PATH.read_text(encoding="utf-8").lower()
+
+    assert "a0202" in reference
+    assert "a0211" in reference
+    assert "allowlist" in reference
+    assert "unknown" in reference and "body codes" in reference

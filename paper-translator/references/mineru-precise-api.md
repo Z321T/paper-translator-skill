@@ -51,6 +51,11 @@ For URL tasks, the helper accepts `pending`, `running`, and `converting` while p
 
 The signed upload URL and the signed result-download URL are requested without the bearer token. They are already authorized URLs and may have a different origin; keep the bearer token only on requests to the MinerU API origin.
 
+Authentication classification uses the repository's current MinerU contract
+allowlist `A0202`, `A0211`, `401`, and `403`, together with explicit
+authentication-failure wording. This is intentionally conservative: unknown
+body codes are not inferred to be authentication failures.
+
 The helper applies bounded exponential backoff only to network failures,
 HTTP 408, HTTP 429, and HTTP 5xx responses. It never retries configuration,
 authentication, or malformed-response failures. A corrupt, incomplete, or otherwise unusable

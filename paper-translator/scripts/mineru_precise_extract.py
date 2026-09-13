@@ -43,6 +43,26 @@ MAX_ARCHIVE_MEMBERS = 4096
 MAX_ARCHIVE_COMPRESSION_RATIO = 100.0
 MAX_ARCHIVE_MEMBER_NAME_LENGTH = 4096
 
+# Conservative authentication-code allowlist. A0202/A0211 are the codes
+# named by this repository's MinerU contract; 401/403 mirror HTTP auth
+# statuses. Unknown response codes must not be guessed to be authentication.
+_AUTHENTICATION_CODES = frozenset({"A0202", "A0211", "401", "403"})
+
+_AUTHENTICATION_REASON_PATTERNS = (
+    r"\b(?:invalid|expired|revoked|rejected)\s+(?:access\s+)?tokens?\b",
+    r"\b(?:access\s+)?tokens?\s+(?:(?:is|are|was|were|has|have|has\s+been|have\s+been)\s+)?(?:invalid|expired|revoked|rejected)\b",
+    r"\b(?:access\s+)?tokens?\s+(?:is\s+)?not\s+valid\b",
+    r"\bunauthori[sz]ed\b",
+    r"\bnot\s+authori[sz]ed\b",
+    r"\bauthori[sz]ation\s+(?:(?:is|was|has\s+been)\s+)?(?:failed|failure|required|rejected|denied|error)\b",
+    r"\bauthentication\s+(?:(?:is|was|has\s+been)\s+)?(?:failed|failure|required|rejected|denied|error)\b",
+    r"\bnot\s+authenticated\b",
+    r"\bpermission\s+denied\b",
+    r"\baccess\s+denied\b",
+    r"\b(?:invalid|expired|revoked|rejected|missing)\s+credentials?\b",
+    r"\bcredentials?\s+(?:(?:are|were|was|have|has|have\s+been|has\s+been)\s+)?(?:invalid|expired|revoked|rejected|missing)\b",
+)
+
 _T = TypeVar("_T")
 
 
@@ -269,12 +289,16 @@ def _safe_reason(value: object, token: str | None = None) -> str:
     return text[:500]
 
 
-def _response_json(response: HttpResponse) -> dict[str, object] | None:
+def _response_json_payload(response: HttpResponse) -> tuple[object | None, bool]:
     try:
-        decoded = json.loads(response.body)
+        return json.loads(response.body), True
     except (TypeError, ValueError, UnicodeDecodeError):
-        return None
-    return decoded if isinstance(decoded, dict) else None
+        return None, False
+
+
+def _response_json(response: HttpResponse) -> dict[str, object] | None:
+    decoded, parsed = _response_json_payload(response)
+    return decoded if parsed and isinstance(decoded, dict) else None
 
 
 def _reason_from_mapping(mapping: Mapping[str, object] | None) -> str:
@@ -294,25 +318,7 @@ def _response_reason(response: HttpResponse, token: str | None = None) -> str:
 
 def _is_authentication_reason(reason: str) -> bool:
     lowered = reason.lower()
-    if "token" in lowered and any(
-        term in lowered for term in ("invalid", "expired", "rejected", "not valid")
-    ):
-        return True
-    return any(
-        term in lowered
-        for term in (
-            "invalid token",
-            "invalid access token",
-            "unauthorized",
-            "not authorized",
-            "authentication",
-            "permission denied",
-            "not authenticated",
-            "token expired",
-            "access denied",
-            "credential",
-        )
-    )
+    return any(re.search(pattern, lowered) for pattern in _AUTHENTICATION_REASON_PATTERNS)
 
 
 def _classify_reason(reason: str, default: str) -> str:
@@ -346,6 +352,27 @@ def _response_code_text(value: object) -> str:
     if isinstance(value, str):
         return value.strip().upper()
     return ""
+
+
+def _is_valid_code(value: object) -> bool:
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return True
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_authentication_code(value: object) -> bool:
+    return _response_code_text(value) in _AUTHENTICATION_CODES
+
+
+def _response_body_is_empty(response: HttpResponse) -> bool:
+    body = response.body
+    if body is None:
+        return True
+    if isinstance(body, (bytes, bytearray, str)):
+        return not body.strip()
+    return False
 
 
 def _is_success_code(value: object) -> bool:
@@ -584,11 +611,8 @@ def _decode_api_response(
     response: HttpResponse, *, token: str | None = None
 ) -> dict[str, object]:
     reason = _response_reason(response, token)
-    decoded = _response_json(response)
-    response_code = (
-        _response_code_text(decoded.get("code")) if decoded is not None else ""
-    )
-    auth_code = response_code in {"A0202", "A0211", "401", "403"}
+    decoded_value, parsed = _response_json_payload(response)
+    decoded = decoded_value if parsed and isinstance(decoded_value, dict) else None
     if isinstance(response.status, bool) or not isinstance(response.status, int):
         raise MineruError(
             "service",
@@ -596,11 +620,57 @@ def _decode_api_response(
             fallback_allowed=True,
         )
     if not 200 <= response.status < 300:
-        if response.status in {401, 403} or auth_code or _is_authentication_reason(reason):
-            category = "authentication"
-            fallback_allowed = False
-            retryable = False
-        elif response.status == 429:
+        # Authentication evidence takes precedence over both HTTP status and
+        # schema checks, including on a nominally temporary 5xx response.
+        if response.status in {401, 403} or _is_authentication_reason(reason):
+            suffix = f": {reason}" if reason else ""
+            raise MineruError(
+                "authentication",
+                f"MinerU API request failed{suffix}",
+                fallback_allowed=False,
+                retryable=False,
+            )
+        if parsed:
+            if not isinstance(decoded_value, dict):
+                raise MineruError(
+                    "service",
+                    "MinerU API response JSON shape is invalid",
+                    fallback_allowed=True,
+                    retryable=False,
+                )
+            if "code" not in decoded_value:
+                suffix = f": {reason}" if reason else ""
+                raise MineruError(
+                    "service",
+                    f"MinerU API response code is missing{suffix}",
+                    fallback_allowed=True,
+                    retryable=False,
+                )
+            code = decoded_value["code"]
+            if not _is_valid_code(code):
+                suffix = f": {reason}" if reason else ""
+                raise MineruError(
+                    "service",
+                    f"MinerU API response code is invalid{suffix}",
+                    fallback_allowed=True,
+                    retryable=False,
+                )
+            if _is_authentication_code(code):
+                suffix = f": {reason}" if reason else ""
+                raise MineruError(
+                    "authentication",
+                    f"MinerU API request failed{suffix}",
+                    fallback_allowed=False,
+                    retryable=False,
+                )
+        elif not _response_body_is_empty(response):
+            raise MineruError(
+                "service",
+                "MinerU API returned invalid JSON",
+                fallback_allowed=True,
+                retryable=False,
+            )
+        if response.status == 429:
             category = "rate_limit"
             fallback_allowed = True
             retryable = True
@@ -623,42 +693,56 @@ def _decode_api_response(
             fallback_allowed=fallback_allowed,
             retryable=retryable,
         )
-    if decoded is None:
+    if not parsed:
         raise MineruError(
             "service",
             "MinerU API returned invalid JSON",
             fallback_allowed=True,
             retryable=False,
         )
+    if not isinstance(decoded_value, dict):
+        raise MineruError(
+            "service",
+            "MinerU API response JSON shape is invalid",
+            fallback_allowed=True,
+            retryable=False,
+        )
+    decoded = decoded_value
     if "code" not in decoded:
         if _is_authentication_reason(reason):
             raise MineruError(
                 "authentication",
                 f"MinerU API reported an authentication failure: {reason}",
                 fallback_allowed=False,
+                retryable=False,
             )
         suffix = f": {reason}" if reason else ""
         raise MineruError(
             "service",
             f"MinerU API response code is missing{suffix}",
             fallback_allowed=True,
+            retryable=False,
         )
     code = decoded["code"]
     reason = _safe_reason(_reason_from_mapping(decoded), token)
-    code_text = _response_code_text(code)
     if _is_authentication_reason(reason):
         raise MineruError(
             "authentication",
             f"MinerU API reported an authentication failure: {reason}",
             fallback_allowed=False,
+            retryable=False,
         )
+    if not _is_valid_code(code):
+        suffix = f": {reason}" if reason else ""
+        raise MineruError(
+            "service",
+            f"MinerU API response code is invalid{suffix}",
+            fallback_allowed=True,
+            retryable=False,
+        )
+    code_text = _response_code_text(code)
     if not _is_success_code(code):
-        if code_text in {
-            "A0202",
-            "A0211",
-            "401",
-            "403",
-        }:
+        if _is_authentication_code(code):
             category = "authentication"
             fallback_allowed = False
             retryable = False
@@ -666,13 +750,6 @@ def _decode_api_response(
             category = "rate_limit"
             fallback_allowed = True
             retryable = False
-        elif not isinstance(code, (int, str)) or isinstance(code, bool):
-            suffix = f": {reason}" if reason else ""
-            raise MineruError(
-                "service",
-                f"MinerU API response code is invalid{suffix}",
-                fallback_allowed=True,
-            )
         else:
             category = _classify_reason(reason, "service")
             fallback_allowed = True
@@ -1213,7 +1290,10 @@ class MineruClient:
 
     def _task_failure(self, data: Mapping[str, object], *, default: str = "task") -> MineruError:
         reason = _safe_reason(_reason_from_mapping(data), self.config.token)
-        category = _classify_reason(reason, default)
+        if _is_authentication_code(data.get("code")):
+            category = "authentication"
+        else:
+            category = _classify_reason(reason, default)
         suffix = f": {reason}" if reason else ""
         return MineruError(
             category,

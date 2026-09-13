@@ -1224,6 +1224,8 @@ def test_http_error_code_in_body_cannot_bypass_authentication_classification(tmp
         (400, "token is invalid"),
         (404, "unauthorized request"),
         (404, "not authorized"),
+        (503, "authorization failed"),
+        (503, "token revoked"),
         (503, "authentication required"),
     ],
 )
@@ -1250,6 +1252,42 @@ def test_http_authentication_reason_is_not_retried(tmp_path, status, reason):
     assert error.value.fallback_allowed is False
     assert len(requests) == 1
     assert "secret-token" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "authentication model is unavailable",
+        "credential management is documented",
+        "authorization protocol is unsupported",
+    ],
+)
+def test_ordinary_document_reason_is_not_misclassified_as_authentication(
+    tmp_path, reason
+):
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return mineru.HttpResponse(
+            503, json.dumps({"code": 0, "msg": reason}).encode(), {}
+        )
+
+    client = mineru.MineruClient(
+        mineru.Config(
+            "secret-token", retry_attempts=3, retry_backoff_seconds=0, timeout_seconds=30
+        ),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "service"
+    assert error.value.fallback_allowed is True
+    assert len(requests) == 3
 
 
 def test_task_authentication_reason_is_not_fallback_or_retried(tmp_path):
@@ -1282,6 +1320,127 @@ def test_task_authentication_reason_is_not_fallback_or_retried(tmp_path):
     assert len(requests) == 2
     assert "unauthorized" in str(error.value)
     assert "secret-token" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["A0202", "A0211", 401, 403],
+    ids=["A0202", "A0211", "401", "403"],
+)
+def test_task_authentication_code_is_not_fallback_or_retried(tmp_path, code):
+    responses = [
+        mineru.HttpResponse(200, b'{"code":0,"data":{"task_id":"task-1"}}', {}),
+        mineru.HttpResponse(
+            200,
+            json.dumps(
+                {
+                    "code": 0,
+                    "data": {
+                        "state": "failed",
+                        "code": code,
+                        "err_msg": "request rejected",
+                    },
+                }
+            ).encode(),
+            {},
+        ),
+    ]
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return responses.pop(0)
+
+    client = mineru.MineruClient(
+        mineru.Config("secret-token", retry_attempts=3, retry_backoff_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+    assert len(requests) == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"data":{"task_id":"task-1"}}',
+        b'{"code":[],"msg":"temporary"}',
+        b'{"code":{},"msg":"temporary"}',
+        b'{"code":true,"msg":"temporary"}',
+        b'{"code":1.5,"msg":"temporary"}',
+        b'{"code":null,"msg":"temporary"}',
+        b"[]",
+        b"not-json",
+    ],
+    ids=[
+        "missing",
+        "list",
+        "dict",
+        "bool",
+        "float",
+        "null",
+        "top-level-list",
+        "invalid-json",
+    ],
+)
+def test_http_503_malformed_response_is_not_retried(tmp_path, body):
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return mineru.HttpResponse(503, body, {})
+
+    client = mineru.MineruClient(
+        mineru.Config(
+            "fake-token", retry_attempts=3, retry_backoff_seconds=0, timeout_seconds=30
+        ),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "service"
+    assert error.value.fallback_allowed is True
+    assert error.value.retryable is False
+    assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "body",
+    [b"", b'{"code":0,"msg":"temporary"}', b'{"code":"0","msg":"temporary"}'],
+    ids=["empty", "integer-success-code", "string-success-code"],
+)
+def test_http_503_without_body_or_with_valid_code_is_retried(tmp_path, body):
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return mineru.HttpResponse(503, body, {})
+
+    client = mineru.MineruClient(
+        mineru.Config(
+            "fake-token", retry_attempts=3, retry_backoff_seconds=0, timeout_seconds=30
+        ),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "service"
+    assert error.value.fallback_allowed is True
+    assert len(requests) == 3
 
 
 @pytest.mark.parametrize(
@@ -1344,9 +1503,9 @@ def test_success_response_with_authentication_reason_is_rejected():
 def test_http_408_is_retried_with_a_bounded_attempt_count(tmp_path):
     requests = []
     responses = [
-        mineru.HttpResponse(408, b'{"msg":"request timeout"}', {}),
-        mineru.HttpResponse(408, b'{"msg":"request timeout"}', {}),
-        mineru.HttpResponse(408, b'{"msg":"request timeout"}', {}),
+        mineru.HttpResponse(408, b'{"code":408,"msg":"request timeout"}', {}),
+        mineru.HttpResponse(408, b'{"code":408,"msg":"request timeout"}', {}),
+        mineru.HttpResponse(408, b'{"code":408,"msg":"request timeout"}', {}),
     ]
 
     def fake_request(method, url, *, headers, json_body, body_file, timeout):
@@ -1375,7 +1534,7 @@ def test_configured_retry_attempts_remain_globally_bounded(tmp_path):
 
     def fake_request(method, url, *, headers, json_body, body_file, timeout):
         requests.append((method, url))
-        return mineru.HttpResponse(503, b'{"msg":"temporary"}', {})
+        return mineru.HttpResponse(503, b'{"code":503,"msg":"temporary"}', {})
 
     client = mineru.MineruClient(
         mineru.Config(
