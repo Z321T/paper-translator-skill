@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Mapping
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 
@@ -92,7 +93,9 @@ def urlopen_request(
     upload_stream = None
     if body_file is not None:
         # The upload URL is already signed; the API bearer token must not be sent.
-        request_headers.pop("Authorization", None)
+        for key in tuple(request_headers):
+            if key.lower() == "authorization":
+                del request_headers[key]
         upload_stream = body_file.open("rb")
         data = upload_stream
     elif json_body is not None:
@@ -100,6 +103,15 @@ def urlopen_request(
         request_headers.setdefault("Content-Type", "application/json")
     else:
         data = None
+    if any(key.lower() == "authorization" for key in request_headers):
+        destination = urlsplit(url)
+        origin = f"{destination.scheme}://{destination.netloc}"
+        if origin != API_ORIGIN:
+            raise MineruError(
+                "security",
+                "authenticated requests must target the MinerU API origin",
+                fallback_allowed=False,
+            )
     request = Request(url, data=data, headers=request_headers, method=method)
     try:
         try:

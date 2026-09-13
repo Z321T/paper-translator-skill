@@ -44,3 +44,32 @@ The implementation is limited to the requested configuration and HTTP boundary. 
 ## Concerns
 
 No known concerns. The HTTP boundary intentionally leaves HTTP status classification to the later API-client task.
+
+## Fix Round 1
+
+### Changes
+
+Enforced that requests carrying an Authorization header target exactly `https://mineru.net`. Requests to another origin now raise a non-fallback `MineruError` with category `security` before constructing or sending the request. Signed uploads continue to permit external signed-storage URLs while removing Authorization case-insensitively.
+
+### TDD tests
+
+RED command:
+
+```text
+uv run pytest tests/test_mineru_precise_extract.py -v
+```
+
+Result: 1 failed, 5 passed; the new origin test received the existing `network` error instead of the expected `security` error.
+
+GREEN commands:
+
+```text
+uv run pytest tests/test_mineru_precise_extract.py -v
+uv run pytest -v
+```
+
+Both completed with `6 passed`.
+
+### Review
+
+The focused tests verify both rejection of Bearer-authenticated non-MinerU destinations and removal of Authorization from signed uploads. No real token or network was used.

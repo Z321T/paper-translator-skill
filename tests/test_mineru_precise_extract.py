@@ -56,3 +56,54 @@ def test_load_config_rejects_missing_token(tmp_path, contents):
 
     assert error.value.category == "configuration"
     assert error.value.fallback_allowed is False
+
+
+def test_authenticated_request_rejects_non_mineru_origin():
+    with pytest.raises(mineru.MineruError) as error:
+        mineru.urlopen_request(
+            "GET",
+            "https://attacker.example/upload",
+            headers={"Authorization": "Bearer test-token"},
+            json_body=None,
+            body_file=None,
+            timeout=1,
+        )
+
+    assert error.value.category == "security"
+    assert error.value.fallback_allowed is False
+
+
+def test_signed_upload_strips_authorization(monkeypatch, tmp_path):
+    upload = tmp_path / "upload.bin"
+    upload.write_bytes(b"payload")
+    seen = {}
+
+    class Response:
+        status = 200
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    def fake_urlopen(request, timeout):
+        seen["request"] = request
+        return Response()
+
+    monkeypatch.setattr(mineru, "urlopen", fake_urlopen)
+    response = mineru.urlopen_request(
+        "PUT",
+        "https://storage.example/signed-upload",
+        headers={"Authorization": "Bearer test-token", "Content-Type": "application/pdf"},
+        json_body=None,
+        body_file=upload,
+        timeout=1,
+    )
+
+    assert response.status == 200
+    assert "Authorization" not in seen["request"].headers
