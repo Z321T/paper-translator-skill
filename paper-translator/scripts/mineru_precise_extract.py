@@ -136,6 +136,8 @@ def urlopen_request(
             )
         except URLError as error:
             raise MineruError("network", "MinerU request failed", fallback_allowed=True) from error
+        except OSError as error:
+            raise MineruError("network", "MinerU request failed", fallback_allowed=True) from error
     finally:
         if upload_stream is not None:
             upload_stream.close()
@@ -301,9 +303,15 @@ class MineruClient:
             )
         upload_url = next(
             (
-                item.get("url")
+                item
+                if isinstance(item, str) and item
+                else item.get("url")
+                if isinstance(item, Mapping)
+                and item.get("name") == source.name
+                and isinstance(item.get("url"), str)
+                and item.get("url")
+                else None
                 for item in file_urls
-                if isinstance(item, dict) and item.get("name") == source.name
             ),
             None,
         )

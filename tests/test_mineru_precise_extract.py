@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import re
+import socket
 import sys
 from pathlib import Path
 from zipfile import ZipFile
@@ -118,6 +119,51 @@ def test_signed_upload_strips_authorization(monkeypatch, tmp_path):
 
     assert response.status == 200
     assert "Authorization" not in seen["request"].headers
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    [
+        (socket.timeout, "socket timed out"),
+        (TimeoutError, "request timed out"),
+        (OSError, "connection reset"),
+    ],
+    ids=["socket-timeout", "timeout-error", "network-os-error"],
+)
+def test_urlopen_request_classifies_network_os_errors_as_fallback(
+    monkeypatch, error_type, message
+):
+    def fake_urlopen(request, timeout):
+        raise error_type(message)
+
+    monkeypatch.setattr(mineru, "urlopen", fake_urlopen)
+
+    with pytest.raises(mineru.MineruError) as error:
+        mineru.urlopen_request(
+            "GET",
+            "https://mineru.net/api/v4/extract/task",
+            headers={"Authorization": "Bearer test-token"},
+            json_body=None,
+            body_file=None,
+            timeout=1,
+        )
+
+    assert error.value.category == "network"
+    assert error.value.fallback_allowed is True
+
+
+def test_urlopen_request_preserves_local_file_errors(tmp_path):
+    missing_file = tmp_path / "missing.pdf"
+
+    with pytest.raises(FileNotFoundError):
+        mineru.urlopen_request(
+            "PUT",
+            "https://storage.example/signed-upload",
+            headers={},
+            json_body=None,
+            body_file=missing_file,
+            timeout=1,
+        )
 
 
 def test_remote_source_uses_precise_v4_endpoints_and_publishes_result(tmp_path):
@@ -240,6 +286,56 @@ def test_local_file_uses_signed_upload_and_batch_polling(tmp_path):
     assert "Content-Type" not in requests[1]["headers"]
     assert requests[2]["method"] == "GET"
     assert requests[2]["url"] == "https://mineru.net/api/v4/extract-results/batch/batch-1"
+
+
+def test_local_file_accepts_string_signed_upload_url(tmp_path):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-1.7")
+    requests = []
+    responses = [
+        mineru.HttpResponse(
+            200,
+            b'{"code":0,"data":{"batch_id":"batch-1","file_urls":['
+            b'"https://storage.example/upload"]}}',
+            {},
+        ),
+        mineru.HttpResponse(200, b"", {}),
+        mineru.HttpResponse(
+            200,
+            b'{"code":0,"data":{"extract_result":[{"file_name":"paper.pdf",'
+            b'"state":"done","full_zip_url":"https://cdn.example/result.zip"}]}}',
+            {},
+        ),
+        mineru.HttpResponse(200, make_zip_bytes({"full.md": "# Paper"}), {}),
+    ]
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": dict(headers),
+                "json": json_body,
+                "body_file": body_file,
+            }
+        )
+        return responses.pop(0)
+
+    client = mineru.MineruClient(
+        mineru.Config("fake-token", timeout_seconds=10, poll_interval_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+    output_dir = tmp_path / "published"
+
+    result = client.extract(str(source), output_dir)
+
+    assert result == output_dir
+    assert (output_dir / "full.md").read_text(encoding="utf-8") == "# Paper"
+    assert requests[1]["method"] == "PUT"
+    assert requests[1]["url"] == "https://storage.example/upload"
+    assert requests[1]["body_file"] == source
 
 
 def test_result_archive_with_markdown_and_images_is_published(tmp_path):
