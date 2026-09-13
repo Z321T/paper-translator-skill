@@ -23,7 +23,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
-from zipfile import BadZipFile, LargeZipFile, ZipFile
+from zipfile import ZipFile
 
 
 API_ORIGIN = "https://mineru.net"
@@ -292,7 +292,32 @@ def _response_reason(response: HttpResponse, token: str | None = None) -> str:
     return _safe_reason(_reason_from_mapping(decoded), token)
 
 
+def _is_authentication_reason(reason: str) -> bool:
+    lowered = reason.lower()
+    if "token" in lowered and any(
+        term in lowered for term in ("invalid", "expired", "rejected", "not valid")
+    ):
+        return True
+    return any(
+        term in lowered
+        for term in (
+            "invalid token",
+            "invalid access token",
+            "unauthorized",
+            "not authorized",
+            "authentication",
+            "permission denied",
+            "not authenticated",
+            "token expired",
+            "access denied",
+            "credential",
+        )
+    )
+
+
 def _classify_reason(reason: str, default: str) -> str:
+    if _is_authentication_reason(reason):
+        return "authentication"
     lowered = reason.lower()
     if any(term in lowered for term in ("rate limit", "too many request", "quota")):
         return "rate_limit"
@@ -311,6 +336,24 @@ def _classify_reason(reason: str, default: str) -> str:
     ):
         return "document"
     return default
+
+
+def _response_code_text(value: object) -> str:
+    if isinstance(value, bool):
+        return ""
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, str):
+        return value.strip().upper()
+    return ""
+
+
+def _is_success_code(value: object) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value == 0
+    ) or (isinstance(value, str) and value.strip() == "0")
 
 
 def _validate_url(url: object, *, require_https: bool, purpose: str) -> str:
@@ -542,14 +585,22 @@ def _decode_api_response(
 ) -> dict[str, object]:
     reason = _response_reason(response, token)
     decoded = _response_json(response)
-    response_code = str(decoded.get("code")).upper() if decoded is not None else ""
+    response_code = (
+        _response_code_text(decoded.get("code")) if decoded is not None else ""
+    )
     auth_code = response_code in {"A0202", "A0211", "401", "403"}
+    if isinstance(response.status, bool) or not isinstance(response.status, int):
+        raise MineruError(
+            "service",
+            "MinerU response status is invalid",
+            fallback_allowed=True,
+        )
     if not 200 <= response.status < 300:
-        if response.status in {401, 403} or auth_code:
+        if response.status in {401, 403} or auth_code or _is_authentication_reason(reason):
             category = "authentication"
             fallback_allowed = False
             retryable = False
-        elif response.status == 429 or response_code in {"429", "A0203", "RATE_LIMIT"}:
+        elif response.status == 429:
             category = "rate_limit"
             fallback_allowed = True
             retryable = True
@@ -577,23 +628,51 @@ def _decode_api_response(
             "service",
             "MinerU API returned invalid JSON",
             fallback_allowed=True,
-            retryable=True,
+            retryable=False,
         )
-    code = decoded.get("code")
-    code_text = str(code).upper()
+    if "code" not in decoded:
+        if _is_authentication_reason(reason):
+            raise MineruError(
+                "authentication",
+                f"MinerU API reported an authentication failure: {reason}",
+                fallback_allowed=False,
+            )
+        suffix = f": {reason}" if reason else ""
+        raise MineruError(
+            "service",
+            f"MinerU API response code is missing{suffix}",
+            fallback_allowed=True,
+        )
+    code = decoded["code"]
     reason = _safe_reason(_reason_from_mapping(decoded), token)
-    if code not in {0, "0", None}:
-        if code_text in {"A0202", "A0211", "401", "403"} or any(
-            term in reason.lower()
-            for term in ("unauthorized", "authentication", "invalid token")
-        ):
+    code_text = _response_code_text(code)
+    if _is_authentication_reason(reason):
+        raise MineruError(
+            "authentication",
+            f"MinerU API reported an authentication failure: {reason}",
+            fallback_allowed=False,
+        )
+    if not _is_success_code(code):
+        if code_text in {
+            "A0202",
+            "A0211",
+            "401",
+            "403",
+        }:
             category = "authentication"
             fallback_allowed = False
             retryable = False
-        elif code_text in {"429", "A0203", "RATE_LIMIT"} or _classify_reason(reason, "") == "rate_limit":
+        elif _classify_reason(reason, "") == "rate_limit":
             category = "rate_limit"
             fallback_allowed = True
-            retryable = True
+            retryable = False
+        elif not isinstance(code, (int, str)) or isinstance(code, bool):
+            suffix = f": {reason}" if reason else ""
+            raise MineruError(
+                "service",
+                f"MinerU API response code is invalid{suffix}",
+                fallback_allowed=True,
+            )
         else:
             category = _classify_reason(reason, "service")
             fallback_allowed = True
@@ -611,7 +690,7 @@ def _decode_api_response(
             "service",
             "MinerU API response data is invalid",
             fallback_allowed=True,
-            retryable=True,
+            retryable=False,
         )
     return data
 
@@ -649,7 +728,7 @@ def _replace_directory(staging_dir: Path, output_dir: Path) -> None:
             _remove_path(backup_dir)
     except MineruError:
         raise
-    except OSError as exc:
+    except Exception as exc:
         raise MineruError(
             "local_io",
             "unable to publish MinerU extraction output",
@@ -682,6 +761,76 @@ def _archive_resource_error(message: str) -> MineruError:
         fallback_allowed=True,
         clean_retry=False,
     )
+
+
+def _archive_corruption_error(_exc: Exception) -> MineruError:
+    return MineruError(
+        "result",
+        "MinerU result archive is corrupt or incomplete",
+        fallback_allowed=True,
+        clean_retry=True,
+    )
+
+
+def _extract_archive_member(
+    archive: ZipFile,
+    member: object,
+    destination: Path,
+    written_total: int,
+) -> int:
+    """Extract one untrusted member while separating decode and disk errors."""
+
+    try:
+        source_stream = archive.open(member, "r")  # type: ignore[arg-type]
+    except Exception as exc:
+        raise _archive_corruption_error(exc) from exc
+
+    try:
+        with source_stream:
+            try:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination_stream = destination.open("wb")
+            except Exception as exc:
+                raise MineruError(
+                    "local_io",
+                    "unable to write MinerU output",
+                    fallback_allowed=False,
+                ) from exc
+            try:
+                with destination_stream:
+                    while True:
+                        try:
+                            chunk = source_stream.read(1024 * 1024)
+                        except Exception as exc:
+                            raise _archive_corruption_error(exc) from exc
+                        if not chunk:
+                            break
+                        written_total += len(chunk)
+                        if written_total > MAX_ARCHIVE_TOTAL_BYTES:
+                            raise _archive_resource_error(
+                                "MinerU result archive is too large when decompressed"
+                            )
+                        try:
+                            destination_stream.write(chunk)
+                        except Exception as exc:
+                            raise MineruError(
+                                "local_io",
+                                "unable to write MinerU output",
+                                fallback_allowed=False,
+                            ) from exc
+            except MineruError:
+                raise
+            except Exception as exc:
+                raise MineruError(
+                    "local_io",
+                    "unable to write MinerU output",
+                    fallback_allowed=False,
+                ) from exc
+    except MineruError:
+        raise
+    except Exception as exc:
+        raise _archive_corruption_error(exc) from exc
+    return written_total
 
 
 class MineruClient:
@@ -810,7 +959,16 @@ class MineruClient:
                         self._sleep_bounded(self._retry_delay(attempt), deadline)
                         continue
                     raise
-            if response.status == 429 or 500 <= response.status < 600:
+            if not 200 <= response.status < 300:
+                response_reason = _response_reason(response, self.config.token)
+                if _is_authentication_reason(response_reason):
+                    suffix = f": {response_reason}" if response_reason else ""
+                    raise MineruError(
+                        "authentication",
+                        f"MinerU request was rejected{suffix}",
+                        fallback_allowed=False,
+                    )
+            if response.status in {408, 429} or 500 <= response.status < 600:
                 if attempt + 1 < attempt_limit:
                     self._sleep_bounded(self._retry_delay(attempt), deadline)
                     continue
@@ -866,7 +1024,7 @@ class MineruClient:
         assert isinstance(response, HttpResponse)
         if not 200 <= response.status < 300:
             reason = _response_reason(response, self.config.token)
-            if response.status in {401, 403}:
+            if response.status in {401, 403} or _is_authentication_reason(reason):
                 category = "authentication"
                 fallback_allowed = False
             elif response.status == 429:
@@ -922,7 +1080,7 @@ class MineruClient:
         try:
             try:
                 staging_dir.mkdir()
-            except OSError as exc:
+            except Exception as exc:
                 raise MineruError(
                     "local_io",
                     "unable to create MinerU staging output",
@@ -938,7 +1096,14 @@ class MineruClient:
                     seen: set[str] = set()
                     total_declared = 0
                     markdown_found = False
-                    staging_root = staging_dir.resolve()
+                    try:
+                        staging_root = staging_dir.resolve()
+                    except Exception as exc:
+                        raise MineruError(
+                            "local_io",
+                            "unable to resolve MinerU staging output",
+                            fallback_allowed=False,
+                        ) from exc
                     for member in members:
                         relative = _archive_member_relative_path(member.filename)
                         key = relative.as_posix()
@@ -947,7 +1112,14 @@ class MineruClient:
                                 "MinerU result archive contains duplicate members"
                             )
                         seen.add(key)
-                        destination = (staging_dir / relative).resolve()
+                        try:
+                            destination = (staging_dir / relative).resolve()
+                        except Exception as exc:
+                            raise MineruError(
+                                "local_io",
+                                "unable to resolve MinerU output path",
+                                fallback_allowed=False,
+                            ) from exc
                         if not destination.is_relative_to(staging_root):
                             raise MineruError(
                                 "result",
@@ -998,55 +1170,25 @@ class MineruClient:
                         if member.is_dir():
                             try:
                                 destination.mkdir(parents=True, exist_ok=True)
-                            except OSError as exc:
+                            except Exception as exc:
                                 raise MineruError(
                                     "local_io",
                                     "unable to create a directory in MinerU output",
                                     fallback_allowed=False,
                                 ) from exc
                             continue
-                        try:
-                            destination.parent.mkdir(parents=True, exist_ok=True)
-                            with archive.open(member, "r") as source_stream, destination.open("wb") as destination_stream:
-                                while True:
-                                    chunk = source_stream.read(1024 * 1024)
-                                    if not chunk:
-                                        break
-                                    written_total += len(chunk)
-                                    if written_total > MAX_ARCHIVE_TOTAL_BYTES:
-                                        raise _archive_resource_error(
-                                            "MinerU result archive is too large when decompressed"
-                                        )
-                                    destination_stream.write(chunk)
-                        except MineruError:
-                            raise
-                        except BadZipFile as exc:
-                            raise MineruError(
-                                "result",
-                                "MinerU result archive is corrupt or incomplete",
-                                fallback_allowed=True,
-                                clean_retry=True,
-                            ) from exc
-                        except (OSError, ValueError) as exc:
-                            raise MineruError(
-                                "local_io",
-                                "unable to write MinerU output",
-                                fallback_allowed=False,
-                            ) from exc
+                        written_total = _extract_archive_member(
+                            archive, member, destination, written_total
+                        )
             except MineruError:
                 raise
-            except (BadZipFile, LargeZipFile, OSError, ValueError, RuntimeError, NotImplementedError) as exc:
-                raise MineruError(
-                    "result",
-                    "MinerU result archive is corrupt or incomplete",
-                    fallback_allowed=True,
-                    clean_retry=True,
-                ) from exc
+            except Exception as exc:
+                raise _archive_corruption_error(exc) from exc
             try:
                 _replace_directory(staging_dir, output_dir)
             except MineruError:
                 raise
-            except OSError as exc:
+            except Exception as exc:
                 raise MineruError(
                     "local_io",
                     "unable to publish MinerU extraction output",
@@ -1073,7 +1215,11 @@ class MineruClient:
         reason = _safe_reason(_reason_from_mapping(data), self.config.token)
         category = _classify_reason(reason, default)
         suffix = f": {reason}" if reason else ""
-        return MineruError(category, f"MinerU task failed{suffix}", fallback_allowed=True)
+        return MineruError(
+            category,
+            f"MinerU task failed{suffix}",
+            fallback_allowed=category != "authentication",
+        )
 
     def _poll_sleep(self, deadline: float) -> None:
         self._sleep_bounded(self.config.poll_interval_seconds, deadline)
@@ -1130,7 +1276,7 @@ class MineruClient:
         assert isinstance(upload_response, HttpResponse)
         if not 200 <= upload_response.status < 300:
             reason = _response_reason(upload_response, self.config.token)
-            if upload_response.status in {401, 403}:
+            if upload_response.status in {401, 403} or _is_authentication_reason(reason):
                 category = "authentication"
                 fallback_allowed = False
             elif upload_response.status == 429:

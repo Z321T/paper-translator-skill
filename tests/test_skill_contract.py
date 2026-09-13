@@ -141,3 +141,13 @@ def test_api_reference_matches_local_upload_and_retry_safety_contract():
     assert "clean precise retry" in reference
     assert "redirect" in reference
     assert "no bearer" in reference or "without the bearer" in reference
+
+
+def test_api_reference_limits_retry_contract_to_supported_triggers():
+    reference = MINERU_REFERENCE_PATH.read_text(encoding="utf-8").lower()
+
+    assert "equivalent temporary api errors" not in reference
+    assert "http 408" in reference
+    assert "http 429" in reference
+    assert "http 5xx" in reference
+    assert "network failures" in reference

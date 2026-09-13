@@ -40,7 +40,7 @@ The current helper extracts the whole document and has no page-range option. If 
 
 ## Precise v4 protocol used by the helper
 
-All API-origin requests use `Authorization: Bearer <token>` and expect a JSON object with `code: 0` and object `data` on success.
+All API-origin requests use `Authorization: Bearer <token>` and expect a JSON object with a scalar `code: 0` and object `data` on success. A missing or malformed `code` is a safe schema failure, not a successful response.
 
 | Source | Request and result flow |
 | --- | --- |
@@ -51,9 +51,9 @@ For URL tasks, the helper accepts `pending`, `running`, and `converting` while p
 
 The signed upload URL and the signed result-download URL are requested without the bearer token. They are already authorized URLs and may have a different origin; keep the bearer token only on requests to the MinerU API origin.
 
-The helper applies bounded exponential backoff to network failures, HTTP 429,
-HTTP 5xx, and equivalent temporary API errors. It never retries configuration
-or authentication failures. A corrupt, incomplete, or otherwise unusable
+The helper applies bounded exponential backoff only to network failures,
+HTTP 408, HTTP 429, and HTTP 5xx responses. It never retries configuration,
+authentication, or malformed-response failures. A corrupt, incomplete, or otherwise unusable
 result archive receives one clean precise retry using a new task; if that also
 fails, the helper reports a fallback-eligible result error. Every request and
 wait uses the remaining overall timeout.

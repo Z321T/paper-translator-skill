@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import math
+import random
 import re
 import socket
 import sys
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request
-from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
+from zipfile import ZIP_BZIP2, ZIP_DEFLATED, ZIP_LZMA, ZipFile, ZipInfo
 
 import pytest
 
@@ -39,6 +41,25 @@ def make_zip_info_bytes(info: ZipInfo, contents: bytes) -> bytes:
     with ZipFile(archive, "w", compression=ZIP_DEFLATED) as zip_file:
         zip_file.writestr(info, contents)
     return archive.getvalue()
+
+
+def make_corrupt_compressed_zip_bytes(compression: int, corruption_offset: int) -> bytes:
+    archive = io.BytesIO()
+    contents = b"# Paper\n" + random.Random(7).randbytes(10000)
+    with ZipFile(archive, "w", compression=compression) as zip_file:
+        zip_file.writestr("full.md", contents)
+    corrupted = bytearray(archive.getvalue())
+    with ZipFile(io.BytesIO(corrupted)) as zip_file:
+        member = zip_file.getinfo("full.md")
+    data_offset = (
+        member.header_offset
+        + 30
+        + len(member.filename.encode("utf-8"))
+        + len(member.extra)
+    )
+    assert corruption_offset < member.compress_size
+    corrupted[data_offset + corruption_offset] ^= 0xFF
+    return bytes(corrupted)
 
 
 def test_load_config_reads_env_without_printing_token(tmp_path, capsys):
@@ -605,6 +626,73 @@ def test_corrupt_result_archive_preserves_existing_publication(tmp_path):
     assert (output_dir / "keep.txt").read_text(encoding="utf-8") == "keep"
 
 
+@pytest.mark.parametrize(
+    ("compression", "corruption_offset"),
+    [
+        (ZIP_DEFLATED, 0),
+        (ZIP_BZIP2, 0),
+        (ZIP_LZMA, 2),
+    ],
+    ids=["deflate", "bzip2", "lzma"],
+)
+def test_corrupt_compressed_member_is_result_error_and_clean_retryable(
+    tmp_path, compression, corruption_offset
+):
+    archive = make_corrupt_compressed_zip_bytes(compression, corruption_offset)
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        return mineru.HttpResponse(200, archive, {})
+
+    client = mineru.MineruClient(mineru.Config("fake-token"), request=fake_request)
+
+    with pytest.raises(mineru.MineruError) as error:
+        client._download_result("https://cdn.example/result.zip", tmp_path / "published")
+
+    assert error.value.category == "result"
+    assert error.value.fallback_allowed is True
+    assert error.value.clean_retry is True
+
+
+def test_corrupt_compressed_member_gets_exactly_one_clean_retry(tmp_path):
+    archive = make_corrupt_compressed_zip_bytes(ZIP_DEFLATED, 0)
+    responses = [
+        mineru.HttpResponse(200, b'{"code":0,"data":{"task_id":"task-1"}}', {}),
+        mineru.HttpResponse(
+            200,
+            b'{"code":0,"data":{"state":"done","full_zip_url":"https://cdn.example/bad.zip"}}',
+            {},
+        ),
+        mineru.HttpResponse(200, archive, {}),
+        mineru.HttpResponse(200, b'{"code":0,"data":{"task_id":"task-2"}}', {}),
+        mineru.HttpResponse(
+            200,
+            b'{"code":0,"data":{"state":"done","full_zip_url":"https://cdn.example/bad-again.zip"}}',
+            {},
+        ),
+        mineru.HttpResponse(200, archive, {}),
+    ]
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return responses.pop(0)
+
+    client = mineru.MineruClient(
+        mineru.Config("fake-token", retry_attempts=1, poll_interval_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "result"
+    assert error.value.fallback_allowed is True
+    assert len([method for method, _ in requests if method == "POST"]) == 2
+    assert len(requests) == 6
+
+
 def test_result_archive_without_markdown_is_rejected(tmp_path):
     archive = make_zip_bytes({"images/figure.png": b"png"})
 
@@ -804,6 +892,25 @@ def test_output_replace_error_is_classified(tmp_path, monkeypatch):
 
     def fail_replace(staging_dir, output_dir):
         raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(mineru, "_replace_directory", fail_replace)
+    client = mineru.MineruClient(mineru.Config("fake-token"), request=fake_request)
+
+    with pytest.raises(mineru.MineruError) as error:
+        client._download_result("https://cdn.example/result.zip", tmp_path / "published")
+
+    assert error.value.category == "local_io"
+    assert error.value.fallback_allowed is False
+
+
+def test_output_replace_unexpected_error_is_classified(tmp_path, monkeypatch):
+    archive = make_zip_bytes({"full.md": "# Paper"})
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        return mineru.HttpResponse(200, archive, {})
+
+    def fail_replace(staging_dir, output_dir):
+        raise RuntimeError("simulated replace failure")
 
     monkeypatch.setattr(mineru, "_replace_directory", fail_replace)
     client = mineru.MineruClient(mineru.Config("fake-token"), request=fake_request)
@@ -1110,6 +1217,130 @@ def test_http_error_code_in_body_cannot_bypass_authentication_classification(tmp
     assert error.value.fallback_allowed is False
 
 
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [
+        (400, "invalid token"),
+        (400, "token is invalid"),
+        (404, "unauthorized request"),
+        (404, "not authorized"),
+        (503, "authentication required"),
+    ],
+)
+def test_http_authentication_reason_is_not_retried(tmp_path, status, reason):
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return mineru.HttpResponse(status, json.dumps({"msg": reason}).encode(), {})
+
+    client = mineru.MineruClient(
+        mineru.Config(
+            "secret-token", retry_attempts=3, retry_backoff_seconds=0, timeout_seconds=30
+        ),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+    assert len(requests) == 1
+    assert "secret-token" not in str(error.value)
+
+
+def test_task_authentication_reason_is_not_fallback_or_retried(tmp_path):
+    responses = [
+        mineru.HttpResponse(200, b'{"code":0,"data":{"task_id":"task-1"}}', {}),
+        mineru.HttpResponse(
+            200,
+            b'{"code":0,"data":{"state":"failed","err_msg":"unauthorized: token=secret-token"}}',
+            {},
+        ),
+    ]
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return responses.pop(0)
+
+    client = mineru.MineruClient(
+        mineru.Config("secret-token", retry_attempts=3, retry_backoff_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract("https://example.org/paper.pdf", tmp_path / "published")
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+    assert len(requests) == 2
+    assert "unauthorized" in str(error.value)
+    assert "secret-token" not in str(error.value)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        [],
+        {},
+        True,
+        1.5,
+        "not-a-status-code",
+    ],
+    ids=["list", "dict", "bool", "float", "string"],
+)
+def test_api_response_rejects_malformed_code_without_raw_type_error(code):
+    body = json.dumps({"code": code, "data": {"task_id": "task-1"}}).encode()
+
+    with pytest.raises(mineru.MineruError) as error:
+        mineru._decode_api_response(
+            mineru.HttpResponse(200, body, {}), token="fake-token"
+        )
+
+    assert error.value.category == "service"
+    assert error.value.fallback_allowed is True
+    assert error.value.retryable is False
+
+
+def test_api_response_requires_code_field():
+    with pytest.raises(mineru.MineruError) as error:
+        mineru._decode_api_response(
+            mineru.HttpResponse(
+                200,
+                b'{"msg":"schema changed","data":{"task_id":"task-1"}}',
+                {},
+            ),
+            token="fake-token",
+        )
+
+    assert error.value.category == "service"
+    assert error.value.fallback_allowed is True
+    assert error.value.retryable is False
+    assert "schema changed" in str(error.value)
+
+
+def test_success_response_with_authentication_reason_is_rejected():
+    with pytest.raises(mineru.MineruError) as error:
+        mineru._decode_api_response(
+            mineru.HttpResponse(
+                200,
+                b'{"code":0,"msg":"unauthorized","data":{"task_id":"task-1"}}',
+                {},
+            ),
+            token="fake-token",
+        )
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+    assert error.value.retryable is False
+
+
 def test_http_408_is_retried_with_a_bounded_attempt_count(tmp_path):
     requests = []
     responses = [
@@ -1219,6 +1450,109 @@ def test_signed_upload_auth_failure_is_not_fallback_or_retried(tmp_path):
     assert requests == [
         ("POST", "https://mineru.net/api/v4/file-urls/batch"),
         ("PUT", "https://storage.example/upload"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [(400, "invalid token"), (503, "unauthorized request")],
+)
+def test_signed_upload_authentication_reason_is_not_retried(
+    tmp_path, status, reason
+):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes(b"%PDF-1.7")
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        if method == "POST":
+            return mineru.HttpResponse(
+                200,
+                b'{"code":0,"data":{"batch_id":"batch-1","file_urls":["https://storage.example/upload"]}}',
+                {},
+            )
+        return mineru.HttpResponse(
+            status, json.dumps({"msg": reason}).encode(), {}
+        )
+
+    client = mineru.MineruClient(
+        mineru.Config("secret-token", retry_attempts=3, retry_backoff_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client.extract(str(source), tmp_path / "published")
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+    assert requests == [
+        ("POST", "https://mineru.net/api/v4/file-urls/batch"),
+        ("PUT", "https://storage.example/upload"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "reason"),
+    [(400, "invalid token"), (503, "unauthorized result request")],
+)
+def test_signed_result_authentication_reason_is_not_retried(
+    tmp_path, status, reason
+):
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return mineru.HttpResponse(
+            status, json.dumps({"msg": reason}).encode(), {}
+        )
+
+    client = mineru.MineruClient(
+        mineru.Config("secret-token", retry_attempts=3, retry_backoff_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    with pytest.raises(mineru.MineruError) as error:
+        client._download_result(
+            "https://storage.example/result.zip", tmp_path / "published"
+        )
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+    assert requests == [("GET", "https://storage.example/result.zip")]
+
+
+def test_signed_result_http_408_is_retried(tmp_path):
+    archive = make_zip_bytes({"full.md": "# Paper"})
+    responses = [
+        mineru.HttpResponse(408, b'{"msg":"request timeout"}', {}),
+        mineru.HttpResponse(200, archive, {}),
+    ]
+    requests = []
+
+    def fake_request(method, url, *, headers, json_body, body_file, timeout):
+        requests.append((method, url))
+        return responses.pop(0)
+
+    client = mineru.MineruClient(
+        mineru.Config("fake-token", retry_attempts=2, retry_backoff_seconds=0),
+        request=fake_request,
+        sleep=lambda _: None,
+        monotonic=lambda: 0,
+    )
+
+    result = client._download_result(
+        "https://storage.example/result.zip", tmp_path / "published"
+    )
+
+    assert result.exists()
+    assert requests == [
+        ("GET", "https://storage.example/result.zip"),
+        ("GET", "https://storage.example/result.zip"),
     ]
 
 
