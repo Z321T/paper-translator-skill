@@ -200,6 +200,42 @@ def test_http_error_body_read_oserror_is_classified_as_network_fallback(monkeypa
     assert error.value.fallback_allowed is True
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_http_error_body_read_oserror_preserves_authentication_classification(
+    monkeypatch, status
+):
+    class BrokenErrorBody:
+        def read(self):
+            raise OSError("connection reset while reading error body")
+
+        def close(self):
+            pass
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            "https://mineru.net/api/v4/extract/task",
+            status,
+            "authentication rejected",
+            {},
+            BrokenErrorBody(),
+        )
+
+    monkeypatch.setattr(mineru, "urlopen", fake_urlopen)
+
+    with pytest.raises(mineru.MineruError) as error:
+        mineru.urlopen_request(
+            "GET",
+            "https://mineru.net/api/v4/extract/task",
+            headers={"Authorization": "Bearer fake-token"},
+            json_body=None,
+            body_file=None,
+            timeout=1,
+        )
+
+    assert error.value.category == "authentication"
+    assert error.value.fallback_allowed is False
+
+
 def test_remote_source_uses_precise_v4_endpoints_and_publishes_result(tmp_path):
     requests = []
     responses = [

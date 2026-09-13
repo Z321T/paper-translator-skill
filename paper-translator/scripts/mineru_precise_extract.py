@@ -132,6 +132,12 @@ def urlopen_request(
             try:
                 body = error.read()
             except OSError as read_error:
+                if error.code in {401, 403}:
+                    raise MineruError(
+                        "authentication",
+                        "MinerU API request was rejected",
+                        fallback_allowed=False,
+                    ) from read_error
                 raise MineruError(
                     "network", "MinerU request failed", fallback_allowed=True
                 ) from read_error
