@@ -19,7 +19,7 @@ Translate an academic PDF into a portable bilingual Markdown bundle: English ori
 
 Confirm the requested translation scope before processing. The current helper extracts the whole document and has no page-range option. If the user selected pages or sections, keep the whole extraction for PDF verification, then apply the selected translation scope during verification and translation. Choose `paper_translation.md` by default, with `paper_translation_assets/` beside it; for a custom name, use `<markdown-stem>_assets/`.
 
-Inventory the source PDF: title metadata, section hierarchy, appendix, formulas, tables, figures, captions, substantive footnotes, and likely layout risks (columns, scans, vector composites, or rotated pages). Exclude page numbers, running heads, DOI bars, and other boilerplate.
+Inventory the source PDF before translation: title metadata, authors, affiliations, institutions, venue, page coverage, all section headings, appendix, formulas, tables, figures, captions, substantive footnotes, and likely layout risks (columns, scans, vector composites, or rotated pages). Exclude page numbers, running heads, DOI bars, and other boilerplate.
 
 ### 2. Authorize and configure MinerU
 
@@ -39,7 +39,9 @@ Never use MinerU lightweight extraction for this workflow. Do not substitute a l
 
 ### 4. Verify against the PDF
 
-Treat the extracted directory as a verification aid. Compare its `full.md`, content list, model/layout JSON, and images with the rendered source pages. Reconcile the structural inventory, then perform anomaly-directed visual checks wherever reading order, formulas, tables, captions, figure boundaries, OCR, or vector layers look uncertain.
+Treat the extracted directory as a verification aid. Compare its `full.md`, content list, model/layout JSON, and images with the rendered source pages. Build a verification inventory that records title, authors, affiliations, venue, page coverage, section headings, figure numbers and captions, table numbers and captions, equation numbers, substantive footnotes, appendix sections, and extracted asset locations. Reconcile the structural inventory, then perform anomaly-directed visual checks wherever reading order, formulas, tables, captions, figure boundaries, OCR, or vector layers look uncertain.
+
+Required page checks are not optional: inspect the first pages and last/final pages, sample middle pages, inspect every page containing a figure, every page containing a table, every page containing a display equation, and inspect all pages at section transitions. Also inspect any page flagged as suspicious by extraction. Do not start translation while the inventory has a missing page, section, figure, table, equation, or reading-order discrepancy.
 
 The PDF settles every discrepancy. Do not translate from a plausible but unverified extraction.
 

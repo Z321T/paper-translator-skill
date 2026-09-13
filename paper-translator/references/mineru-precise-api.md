@@ -45,17 +45,33 @@ All API-origin requests use `Authorization: Bearer <token>` and expect a JSON ob
 | Source | Request and result flow |
 | --- | --- |
 | URL | `POST /api/v4/extract/task` with `url`, `model_version: "vlm"`, `is_ocr`, `enable_formula: true`, `enable_table: true`, and `language`; poll `GET /api/v4/extract/task/{task_id}`. |
-| Local file | `POST /api/v4/file-urls/batch` with the same precise options plus `files`; `PUT` the file to the returned signed URL; poll `GET /api/v4/extract-results/batch/{batch_id}`. |
+| Local file | `POST /api/v4/file-urls/batch` with `model_version: "vlm"`, formula/table flags, language, and `files`; put `is_ocr` inside `files[0]` (not at the top level); `PUT` the file to the returned signed URL; poll `GET /api/v4/extract-results/batch/{batch_id}`. |
 
 For URL tasks, the helper accepts `pending`, `running`, and `converting` while polling; `done` supplies `full_zip_url`, and `failed` ends the task. For local-file batch results it also accepts `waiting-file`; `done` similarly supplies `full_zip_url`. Any other state, timeout, malformed response, failed task, upload failure, or unusable result archive is treated as a fallback-eligible service/result failure.
 
-The signed upload URL and the signed result-download URL do not receive the bearer token. They are already authorized URLs and may have a different origin; keep the bearer token only on requests to the MinerU API origin.
+The signed upload URL and the signed result-download URL are requested without the bearer token. They are already authorized URLs and may have a different origin; keep the bearer token only on requests to the MinerU API origin.
+
+The helper applies bounded exponential backoff to network failures, HTTP 429,
+HTTP 5xx, and equivalent temporary API errors. It never retries configuration
+or authentication failures. A corrupt, incomplete, or otherwise unusable
+result archive receives one clean precise retry using a new task; if that also
+fails, the helper reports a fallback-eligible result error. Every request and
+wait uses the remaining overall timeout.
+
+API bearer requests may follow redirects only when the destination remains on
+the exact `https://mineru.net` origin. Signed upload and download requests do
+not follow redirects at all, so a PDF cannot be sent to a target that was not
+authorized by the returned signed URL. Returned upload/result URLs must be
+absolute HTTPS URLs without userinfo, fragments, or unsupported schemes.
 
 ## Error routing
 
 The helper exits with status 2 for non-fallback errors: configuration, authentication, or security failures. Repair the `.env` value, authorization, or request safety issue and rerun precise extraction.
 
-It exits with status 3 for fallback-eligible network, service, task, result, or archive failures. Only then may the workflow begin adaptive local fallback, starting with visual layout inspection of rendered source pages. A local parser run cannot make the source PDF less authoritative.
+It exits with status 3 for fallback-eligible network, rate-limit, service,
+task, document, result, or archive failures. Only then may the workflow begin
+adaptive local fallback, starting with visual layout inspection of rendered
+source pages. A local parser run cannot make the source PDF less authoritative.
 
 ## Upload disclosure and verification outputs
 

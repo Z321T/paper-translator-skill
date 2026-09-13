@@ -10,9 +10,6 @@ to detect the inter-column gap and extract left/right columns separately.
 
 Usage:
     uv run python scripts/pdf_extract_two_column.py <paper.pdf> [output.txt]
-
-Install:
-    uv add pdfplumber
 """
 
 import sys

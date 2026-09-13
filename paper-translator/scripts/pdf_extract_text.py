@@ -6,9 +6,6 @@ A successful run does not establish extraction completeness.
 
 Usage:
     uv run python scripts/pdf_extract_text.py <paper.pdf> [output.txt]
-
-Install:
-    uv add pdfplumber
 """
 
 import sys

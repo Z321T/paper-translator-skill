@@ -9,9 +9,6 @@ Uses font size heuristics to detect section headers.
 
 Usage:
     uv run python scripts/pdf_check_structure.py <paper.pdf>
-
-Install:
-    uv add pdfplumber
 """
 
 import sys

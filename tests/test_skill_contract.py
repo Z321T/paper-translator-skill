@@ -96,3 +96,48 @@ def test_scope_and_remote_processing_disclosure_are_explicit():
     for document in (readme, skill, reference):
         assert "third-party" in document
         assert "non-public url" in document
+
+
+def test_skill_verification_inventory_and_required_page_checks_are_explicit():
+    skill = SKILL_PATH.read_text(encoding="utf-8").lower()
+
+    for item in (
+        "authors",
+        "affiliations",
+        "institutions",
+        "venue",
+        "page coverage",
+        "section headings",
+        "figure numbers",
+        "table numbers",
+        "equation numbers",
+    ):
+        assert item in skill
+    for required_check in (
+        "first pages",
+        "final pages",
+        "middle pages",
+        "every page containing a figure",
+        "every page containing a table",
+        "every page containing a display equation",
+        "section transitions",
+    ):
+        assert required_check in skill
+
+
+def test_heuristic_scripts_do_not_offer_dependency_mutation_commands():
+    for path in HEURISTIC_SCRIPTS:
+        assert "uv add" not in path.read_text(encoding="utf-8").lower()
+
+
+def test_api_reference_matches_local_upload_and_retry_safety_contract():
+    reference = MINERU_REFERENCE_PATH.read_text(encoding="utf-8").lower()
+
+    assert "files[0]" in reference
+    assert "is_ocr" in reference
+    assert "bounded" in reference
+    assert "429" in reference
+    assert "5xx" in reference
+    assert "clean precise retry" in reference
+    assert "redirect" in reference
+    assert "no bearer" in reference or "without the bearer" in reference
