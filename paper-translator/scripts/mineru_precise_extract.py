@@ -129,9 +129,15 @@ def urlopen_request(
                     headers=dict(response.headers.items()),
                 )
         except HTTPError as error:
+            try:
+                body = error.read()
+            except OSError as read_error:
+                raise MineruError(
+                    "network", "MinerU request failed", fallback_allowed=True
+                ) from read_error
             return HttpResponse(
                 status=error.code,
-                body=error.read(),
+                body=body,
                 headers=dict(error.headers.items()),
             )
         except URLError as error:

@@ -17,13 +17,13 @@ Translate an academic PDF into a portable bilingual Markdown bundle: English ori
 
 ### 1. Choose scope and output
 
-Confirm the requested page range before processing. Default to the whole paper only when the user has not limited the scope. Choose `paper_translation.md` by default, with `paper_translation_assets/` beside it; for a custom name, use `<markdown-stem>_assets/`.
+Confirm the requested translation scope before processing. The current helper extracts the whole document and has no page-range option. If the user selected pages or sections, keep the whole extraction for PDF verification, then apply the selected translation scope during verification and translation. Choose `paper_translation.md` by default, with `paper_translation_assets/` beside it; for a custom name, use `<markdown-stem>_assets/`.
 
 Inventory the source PDF: title metadata, section hierarchy, appendix, formulas, tables, figures, captions, substantive footnotes, and likely layout risks (columns, scans, vector composites, or rotated pages). Exclude page numbers, running heads, DOI bars, and other boilerplate.
 
 ### 2. Authorize and configure MinerU
 
-Before any upload, obtain document-specific authorization: a local PDF will be uploaded to MinerU, a third-party service. Require a `.env` file copied from `paper-translator/.env.example` and populated with the user's token; never put a token in Markdown, commands, logs, or generated output.
+Before any upload or URL submission, obtain document-specific authorization: MinerU is a third-party service. A local PDF is uploaded to MinerU, and a remote URL—including a non-public URL—is submitted so MinerU can retrieve and process the referenced document. Disclose this processing before either path. Require a `.env` file copied from `paper-translator/.env.example` and populated with the user's token; never put a token in Markdown, commands, logs, or generated output.
 
 Read [the precise MinerU API reference](references/mineru-precise-api.md) before invoking the helper. It defines the current endpoint, privacy, credential, and error rules.
 

@@ -6,6 +6,7 @@ import re
 import socket
 import sys
 from pathlib import Path
+from urllib.error import HTTPError
 from zipfile import ZipFile
 
 import pytest
@@ -166,6 +167,39 @@ def test_urlopen_request_preserves_local_file_errors(tmp_path):
         )
 
 
+def test_http_error_body_read_oserror_is_classified_as_network_fallback(monkeypatch):
+    class BrokenErrorBody:
+        def read(self):
+            raise OSError("connection reset while reading error body")
+
+        def close(self):
+            pass
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            "https://mineru.net/api/v4/extract/task",
+            503,
+            "service unavailable",
+            {},
+            BrokenErrorBody(),
+        )
+
+    monkeypatch.setattr(mineru, "urlopen", fake_urlopen)
+
+    with pytest.raises(mineru.MineruError) as error:
+        mineru.urlopen_request(
+            "GET",
+            "https://mineru.net/api/v4/extract/task",
+            headers={"Authorization": "Bearer fake-token"},
+            json_body=None,
+            body_file=None,
+            timeout=1,
+        )
+
+    assert error.value.category == "network"
+    assert error.value.fallback_allowed is True
+
+
 def test_remote_source_uses_precise_v4_endpoints_and_publishes_result(tmp_path):
     requests = []
     responses = [
@@ -211,7 +245,8 @@ def test_remote_source_uses_precise_v4_endpoints_and_publishes_result(tmp_path):
     assert requests[0]["json"]["model_version"] == "vlm"
     assert requests[0]["json"]["enable_formula"] is True
     assert requests[0]["json"]["enable_table"] is True
-    assert all("/api/v1/agent/" not in request["url"] for request in requests)
+    forbidden_endpoint = "/api/v1/" + "agent/"
+    assert all(forbidden_endpoint not in request["url"] for request in requests)
 
 
 def test_local_file_uses_signed_upload_and_batch_polling(tmp_path):

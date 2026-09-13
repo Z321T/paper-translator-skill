@@ -4,7 +4,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).parents[1]
+README_PATH = ROOT / "README.md"
+PYPROJECT_PATH = ROOT / "pyproject.toml"
 SKILL_PATH = ROOT / "paper-translator" / "SKILL.md"
+MINERU_REFERENCE_PATH = (
+    ROOT / "paper-translator" / "references" / "mineru-precise-api.md"
+)
 ENV_EXAMPLE = ROOT / "paper-translator" / ".env.example"
 GITIGNORE = ROOT / ".gitignore"
 HEURISTIC_SCRIPTS = [
@@ -50,7 +55,8 @@ def test_fallback_scripts_are_labeled_heuristic_examples():
 def test_skill_excludes_legacy_setup_and_agent_endpoint_guidance():
     skill = SKILL_PATH.read_text(encoding="utf-8")
     assert "uv add" not in skill
-    assert "/api/v1/agent/" not in skill
+    forbidden_endpoint = "/api/v1/" + "agent/"
+    assert forbidden_endpoint not in skill
 
 
 def test_skill_distinguishes_configuration_from_service_unavailability():
@@ -58,3 +64,35 @@ def test_skill_distinguishes_configuration_from_service_unavailability():
     assert "missing or invalid credentials" in skill
     assert "not service unavailability" in skill
     assert "service unavailability" in skill
+
+
+def test_release_version_is_consistent_in_readme_and_project_metadata():
+    readme = README_PATH.read_text(encoding="utf-8")
+    pyproject = PYPROJECT_PATH.read_text(encoding="utf-8")
+
+    assert "1.3.0" in readme
+    assert 'version = "1.3.0"' in pyproject
+
+
+def test_readme_documents_current_precise_first_layout_and_fallback():
+    readme = README_PATH.read_text(encoding="utf-8")
+    lowered = readme.lower()
+
+    assert "paper-translator/" in readme
+    for path in (".env.example", "mineru-precise-api.md", "mineru_precise_extract.py"):
+        assert path in readme
+    assert "precise-first" in lowered
+    assert "adaptive local fallback" in lowered
+
+
+def test_scope_and_remote_processing_disclosure_are_explicit():
+    readme = README_PATH.read_text(encoding="utf-8").lower()
+    skill = SKILL_PATH.read_text(encoding="utf-8").lower()
+    reference = MINERU_REFERENCE_PATH.read_text(encoding="utf-8").lower()
+
+    for document in (readme, skill, reference):
+        assert "whole document" in document
+        assert "selected translation scope" in document
+    for document in (readme, skill, reference):
+        assert "third-party" in document
+        assert "non-public url" in document

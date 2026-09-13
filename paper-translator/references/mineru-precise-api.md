@@ -36,6 +36,8 @@ uv run python paper-translator/scripts/mineru_precise_extract.py https://example
 
 Optional `--ocr` enables OCR and `--language <code>` supplies the document language. The helper reads `.env` by default; use `--env-file <path>` only when the authorized credential file is elsewhere.
 
+The current helper extracts the whole document and has no page-range option. If the requested output has a selected translation scope, retain the full extraction for verification against the PDF, then apply that selected translation scope during verification and translation.
+
 ## Precise v4 protocol used by the helper
 
 All API-origin requests use `Authorization: Bearer <token>` and expect a JSON object with `code: 0` and object `data` on success.
@@ -57,6 +59,6 @@ It exits with status 3 for fallback-eligible network, service, task, result, or 
 
 ## Upload disclosure and verification outputs
 
-A local-source invocation uploads the PDF to MinerU. Tell the user this third-party transfer occurs, obtain document-specific authorization first, and do not upload confidential or restricted material without it.
+MinerU is a third-party service. A local-source invocation uploads the PDF to MinerU; a URL-source invocation submits the remote URL—including a non-public URL—so MinerU can retrieve and process the referenced document. Tell the user about this processing and obtain document-specific authorization before either path. Do not upload or submit confidential or restricted material without that authorization.
 
 The downloaded ZIP is published into the requested output directory. During verification, inspect `full.md`, the content-list JSON, model/layout JSON, and the extracted `images/` content alongside rendered PDF pages. File names can vary with MinerU output revisions, so locate the corresponding content-list, model, and layout JSON rather than assuming a fixed optional filename. Confirm the archive represents the source before using it to guide translation.
