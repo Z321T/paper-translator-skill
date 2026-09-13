@@ -1,5 +1,9 @@
 """Quick PDF structure check: page count, metadata, section headers.
 
+Heuristic example for model-guided PDF extraction. Inspect the source pages
+first, then adapt thresholds, regions, and reading-order logic to the paper.
+A successful run does not establish extraction completeness.
+
 Use to rapidly assess a paper before full translation.
 Uses font size heuristics to detect section headers.
 

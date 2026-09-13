@@ -1,5 +1,9 @@
 """Two-column layout-aware PDF text extraction for academic papers.
 
+Heuristic example for model-guided PDF extraction. Inspect the source pages
+first, then adapt thresholds, regions, and reading-order logic to the paper.
+A successful run does not establish extraction completeness.
+
 Handles the dense two-column format common in CS conference papers
 (ICML, NeurIPS, CVPR, etc.). Uses word-level bounding box positions
 to detect the inter-column gap and extract left/right columns separately.

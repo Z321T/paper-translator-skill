@@ -1,5 +1,9 @@
 """Simple PDF text extraction using pdfplumber.
 
+Heuristic example for model-guided PDF extraction. Inspect the source pages
+first, then adapt thresholds, regions, and reading-order logic to the paper.
+A successful run does not establish extraction completeness.
+
 Usage:
     uv run python scripts/pdf_extract_text.py <paper.pdf> [output.txt]
 

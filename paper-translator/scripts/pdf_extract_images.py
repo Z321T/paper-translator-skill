@@ -1,5 +1,9 @@
 """Extract PDF image regions into a portable Markdown asset bundle.
 
+Heuristic example for model-guided PDF extraction. Inspect the source pages
+first, then adapt thresholds, regions, and reading-order logic to the paper.
+A successful run does not establish extraction completeness.
+
 Automatic extraction renders raster image blocks as PNG files. Vector or
 composite figures can be preserved with repeatable ``--clip`` arguments.
 
